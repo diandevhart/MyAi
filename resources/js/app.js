@@ -1,10 +1,10 @@
-import './bootstrap';
 import '../css/app.css';
+import './bootstrap';
 
 import { createApp, h } from 'vue';
 import { createInertiaApp } from '@inertiajs/vue3';
 import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
-import { ZiggyVue } from '../../vendor/tightenco/ziggy/dist/index.js';
+import { ZiggyVue } from '../../vendor/tightenco/ziggy';
 import { createPinia } from 'pinia';
 
 import PrimeVue from 'primevue/config';
@@ -18,18 +18,16 @@ import 'element-plus/dist/index.css';
 import VueKonva from 'vue-konva';
 import { createToastflow, ToastContainer } from 'vue-toastflow';
 
-const appName = window.document.getElementsByTagName('title')[0]?.innerText || 'MyAi';
+const appName = import.meta.env.VITE_APP_NAME || 'MyAi';
 const pinia = createPinia();
 
 createInertiaApp({
     title: (title) => `${title} - ${appName}`,
-    resolve: async (name) => {
-        const page = await resolvePageComponent(
+    resolve: (name) =>
+        resolvePageComponent(
             `./Pages/${name}.vue`,
             import.meta.glob('./Pages/**/*.vue'),
-        );
-        return page;
-    },
+        ),
     setup({ el, App, props, plugin }) {
         const app = createApp({ render: () => h(App, props) })
             .use(plugin)

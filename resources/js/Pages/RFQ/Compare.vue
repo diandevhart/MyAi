@@ -8,33 +8,42 @@ import axios from 'axios';
 defineOptions({ layout: AppLayout });
 
 const props = defineProps({
-    comparison: Object,
+    internalRequest: Object,
+    supplierQuotes: { type: Array, default: () => [] },
+    comparison: { type: Array, default: () => [] },
 });
 
-const comp = computed(() => props.comparison);
-const items = computed(() => comp.value?.items || []);
-const suppliers = computed(() => comp.value?.suppliers || []);
+// comparison is an array of { item_id, name, quantity, suppliers: [{ supplier_id, supplier_name, rfq_id, unit_price, total_price, lead_time_days, notes }] }
+const items = computed(() => props.comparison || []);
+const suppliers = computed(() => {
+    // Derive unique suppliers from the first comparison row
+    const first = props.comparison?.[0];
+    if (!first?.suppliers) return [];
+    return first.suppliers.map(s => ({ id: s.supplier_id, name: s.supplier_name }));
+});
+
+function getQuote(item, supplierId) {
+    return item.suppliers?.find(s => s.supplier_id === supplierId) || null;
+}
 
 function lowestPrice(item) {
     let min = Infinity;
-    for (const s of suppliers.value) {
-        const q = item.quotes?.[s.id];
-        if (q?.unit_price && Number(q.unit_price) < min) min = Number(q.unit_price);
+    for (const s of (item.suppliers || [])) {
+        if (s.unit_price && Number(s.unit_price) < min) min = Number(s.unit_price);
     }
     return min === Infinity ? null : min;
 }
 
 function highestPrice(item) {
     let max = -1;
-    for (const s of suppliers.value) {
-        const q = item.quotes?.[s.id];
-        if (q?.unit_price && Number(q.unit_price) > max) max = Number(q.unit_price);
+    for (const s of (item.suppliers || [])) {
+        if (s.unit_price && Number(s.unit_price) > max) max = Number(s.unit_price);
     }
     return max === -1 ? null : max;
 }
 
 function cellBg(item, supplierId) {
-    const q = item.quotes?.[supplierId];
+    const q = getQuote(item, supplierId);
     if (!q?.unit_price) return '';
     const price = Number(q.unit_price);
     const lo = lowestPrice(item);
@@ -47,15 +56,15 @@ function cellBg(item, supplierId) {
 
 function supplierTotal(supplierId) {
     return items.value.reduce((sum, item) => {
-        const q = item.quotes?.[supplierId];
+        const q = getQuote(item, supplierId);
         return sum + Number(q?.total_price || 0);
     }, 0);
 }
 
 function supplierRfqId(supplierId) {
     for (const item of items.value) {
-        const q = item.quotes?.[supplierId];
-        if (q?.supplier_quote_request_id) return q.supplier_quote_request_id;
+        const q = getQuote(item, supplierId);
+        if (q?.rfq_id) return q.rfq_id;
     }
     return null;
 }
@@ -87,8 +96,8 @@ async function awardSupplier(supplierId) {
             </button>
             <div>
                 <h1 class="text-2xl font-bold text-slate-100">Quote Comparison</h1>
-                <p v-if="comp?.internal_request_id" class="text-sm text-slate-400 mt-0.5">
-                    Internal Request <span class="font-mono text-cyan-400">#{{ comp.internal_request_id }}</span>
+                <p v-if="internalRequest" class="text-sm text-slate-400 mt-0.5">
+                    Internal Request <span class="font-mono text-cyan-400">#{{ internalRequest.id }}</span>
                 </p>
             </div>
         </div>
@@ -130,15 +139,15 @@ async function awardSupplier(supplierId) {
                             class="px-5 py-3 text-center"
                             :class="[cellBg(item, s.id), 'bg-slate-900']"
                         >
-                            <template v-if="item.quotes?.[s.id]">
+                            <template v-if="getQuote(item, s.id)?.unit_price">
                                 <div class="text-slate-200 font-medium">
-                                    R {{ Number(item.quotes[s.id].unit_price || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2 }) }}
+                                    R {{ Number(getQuote(item, s.id).unit_price || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2 }) }}
                                 </div>
                                 <div class="text-xs text-slate-400 mt-0.5">
-                                    Total: R {{ Number(item.quotes[s.id].total_price || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2 }) }}
+                                    Total: R {{ Number(getQuote(item, s.id).total_price || 0).toLocaleString('en-ZA', { minimumFractionDigits: 2 }) }}
                                 </div>
-                                <div v-if="item.quotes[s.id].lead_time_days" class="text-xs text-slate-500 mt-0.5">
-                                    {{ item.quotes[s.id].lead_time_days }} days
+                                <div v-if="getQuote(item, s.id).lead_time_days" class="text-xs text-slate-500 mt-0.5">
+                                    {{ getQuote(item, s.id).lead_time_days }} days
                                 </div>
                             </template>
                             <span v-else class="text-slate-600">—</span>

@@ -6,17 +6,11 @@ use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\WarehouseInventoryController;
 use App\Http\Controllers\WarehousesController;
-use Illuminate\Foundation\Application;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
 Route::get('/', function () {
-    return Inertia::render('Welcome', [
-        'canLogin' => Route::has('login'),
-        'canRegister' => Route::has('register'),
-        'laravelVersion' => Application::VERSION,
-        'phpVersion' => PHP_VERSION,
-    ]);
+    return redirect()->route('login');
 });
 
 Route::get('/dashboard', function () {
@@ -55,6 +49,20 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('/inventory/{id}/missing', [WarehouseInventoryController::class, 'markMissing'])->name('inventory.missing');
     Route::post('/rig/{rigId}/equipment', [WarehouseInventoryController::class, 'storeEquipmentOnRig'])->name('inventory.deploy-to-rig');
     Route::post('/rig/{rigId}/kit', [WarehouseInventoryController::class, 'storeKitOnRig'])->name('inventory.deploy-kit-to-rig');
+    Route::get('/inventory/{id}/history', [WarehouseInventoryController::class, 'movementHistory'])->name('inventory.history');
+
+    // Kits
+    Route::get('/kits', [WarehouseInventoryController::class, 'kitsIndex'])->name('kits.index');
+    Route::get('/kits/{id}', [WarehouseInventoryController::class, 'kitShow'])->name('kits.show');
+    Route::post('/kits', [WarehouseInventoryController::class, 'kitStore'])->name('kits.store');
+    Route::put('/kits/{id}', [WarehouseInventoryController::class, 'kitUpdate'])->name('kits.update');
+    Route::delete('/kits/{id}', [WarehouseInventoryController::class, 'kitDestroy'])->name('kits.destroy');
+
+    // CCU / Containers
+    Route::get('/ccu', [WarehouseInventoryController::class, 'ccuIndex'])->name('ccu.index');
+    Route::get('/ccu/{id}', [WarehouseInventoryController::class, 'ccuShow'])->name('ccu.show');
+    Route::put('/ccu/{id}', [WarehouseInventoryController::class, 'ccuUpdate'])->name('ccu.update');
+    Route::delete('/ccu/{id}', [WarehouseInventoryController::class, 'ccuDestroy'])->name('ccu.destroy');
 
     // Catalogue (Group Requirements)
     Route::get('/catalogue', [GroupRequirementController::class, 'index'])->name('catalogue.index');

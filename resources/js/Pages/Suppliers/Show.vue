@@ -12,9 +12,12 @@ defineOptions({ layout: AppLayout });
 
 const props = defineProps({
     supplier: Object,
+    orderHistory: { type: Object, default: () => ({}) },
+    defectRate: { type: Number, default: 0 },
 });
 
 const s = computed(() => props.supplier);
+const orders = computed(() => props.orderHistory?.data || []);
 
 function ratingColor(rating) {
     if (rating >= 4.0) return 'bg-emerald-500/20 text-emerald-400';
@@ -57,10 +60,10 @@ function goToRfq(event) {
     router.visit(route('rfq.show', event.data.id));
 }
 
-const defectRate = computed(() => props.supplier.defect_rate ?? 0);
-const totalOrders = computed(() => props.supplier.supplier_quote_requests?.length || 0);
+const defectRateValue = computed(() => props.defectRate ?? 0);
+const totalOrders = computed(() => props.supplier.supplier_quote_requests_count || 0);
 const avgLeadTime = computed(() => {
-    const items = (props.supplier.supplier_quote_requests || [])
+    const items = orders.value
         .flatMap(r => r.items || [])
         .filter(i => i.lead_time_days);
     if (!items.length) return '—';
@@ -133,8 +136,8 @@ const avgLeadTime = computed(() => {
                 <div class="rounded-xl border border-slate-700 bg-slate-800 p-5">
                     <h3 class="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-4">Order History</h3>
                     <DataTable
-                        :value="s.supplier_quote_requests || []"
-                        :paginator="(s.supplier_quote_requests || []).length > 10"
+                        :value="orders"
+                        :paginator="orders.length > 10"
                         :rows="10"
                         :rowHover="true"
                         @row-click="goToRfq"
@@ -169,7 +172,7 @@ const avgLeadTime = computed(() => {
                             </template>
                         </Column>
                     </DataTable>
-                    <div v-if="!(s.supplier_quote_requests || []).length" class="text-center py-8 text-slate-500 text-sm">
+                    <div v-if="!orders.length" class="text-center py-8 text-slate-500 text-sm">
                         No order history yet.
                     </div>
                 </div>
@@ -184,8 +187,8 @@ const avgLeadTime = computed(() => {
                         <!-- Defect Rate -->
                         <div>
                             <span class="text-xs text-slate-500">Defect Rate</span>
-                            <p :class="['text-3xl font-bold mt-1', defectColor(defectRate)]">
-                                {{ defectRate.toFixed(1) }}%
+                            <p :class="['text-3xl font-bold mt-1', defectColor(defectRateValue)]">
+                                {{ defectRateValue.toFixed(1) }}%
                             </p>
                         </div>
 

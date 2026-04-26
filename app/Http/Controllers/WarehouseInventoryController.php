@@ -822,6 +822,212 @@ class WarehouseInventoryController extends Controller
         }
     }
 
+    // ─── Movement History ──────────────────────────────────
+
+    public function movementHistory(int $id): JsonResponse
+    {
+        $item = WarehouseInventory::findOrFail($id);
+        $history = $this->stockService->getMovementHistory($id);
+
+        return response()->json(['data' => $history]);
+    }
+
+    // ─── Kits ──────────────────────────────────────────────
+
+    public function kitsIndex(): \Inertia\Response
+    {
+        $kits = InventoryKit::with(['warehouse', 'groupRequirement'])
+            ->withCount('inventoryEquipment as component_count')
+            ->orderBy('name')
+            ->paginate(18);
+
+        return Inertia::render('Kits/Index', [
+            'kits' => $kits,
+        ]);
+    }
+
+    public function kitShow(int $id): \Inertia\Response
+    {
+        $kit = InventoryKit::with([
+            'warehouse',
+            'groupRequirement',
+            'inventoryEquipment',
+            'warehouseInventories.inventoryStatus',
+            'warehouseInventories.warehouse',
+        ])->withCount('inventoryEquipment as component_count')
+          ->findOrFail($id);
+
+        return Inertia::render('Kits/Show', [
+            'kit' => $kit,
+        ]);
+    }
+
+    public function kitStore(Request $request): JsonResponse
+    {
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            'kit_code' => 'nullable|string|max:100',
+            'group_requirement_id' => 'nullable|exists:group_requirements,id',
+            'warehouse_id' => 'required|exists:warehouses,id',
+            'components' => 'required|array|min:1',
+            'components.*.inventory_equipment_id' => 'required|exists:inventory_equipment,id',
+            'components.*.quantity' => 'required|integer|min:1',
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $kit = InventoryKit::create([
+                'name' => $request->input('name'),
+                'description' => $request->input('description'),
+                'kit_code' => $request->input('kit_code'),
+                'group_requirement_id' => $request->input('group_requirement_id'),
+                'warehouse_id' => $request->input('warehouse_id'),
+                'is_active' => true,
+            ]);
+
+            foreach ($request->input('components') as $comp) {
+                $kit->inventoryEquipment()->attach($comp['inventory_equipment_id'], [
+                    'quantity' => $comp['quantity'],
+                ]);
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'message' => "Kit '{$kit->name}' created successfully.",
+                'kit' => $kit->load('inventoryEquipment'),
+            ], 201);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            Log::error('kitStore failed', ['error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to create kit.'], 500);
+        }
+    }
+
+    public function kitUpdate(Request $request, int $id): JsonResponse
+    {
+        $kit = InventoryKit::findOrFail($id);
+
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            'kit_code' => 'nullable|string|max:100',
+            'group_requirement_id' => 'nullable|exists:group_requirements,id',
+            'warehouse_id' => 'nullable|exists:warehouses,id',
+            'is_active' => 'nullable|boolean',
+            'components' => 'nullable|array',
+            'components.*.inventory_equipment_id' => 'required_with:components|exists:inventory_equipment,id',
+            'components.*.quantity' => 'required_with:components|integer|min:1',
+        ]);
+
+        try {
+            DB::beginTransaction();
+
+            $kit->update($request->only(['name', 'description', 'kit_code', 'group_requirement_id', 'warehouse_id', 'is_active']));
+
+            if ($request->has('components')) {
+                $syncData = [];
+                foreach ($request->input('components') as $comp) {
+                    $syncData[$comp['inventory_equipment_id']] = ['quantity' => $comp['quantity']];
+                }
+                $kit->inventoryEquipment()->sync($syncData);
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'message' => "Kit '{$kit->name}' updated.",
+                'kit' => $kit->fresh(['inventoryEquipment', 'warehouse']),
+            ]);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            Log::error('kitUpdate failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to update kit.'], 500);
+        }
+    }
+
+    public function kitDestroy(int $id): JsonResponse
+    {
+        $kit = InventoryKit::findOrFail($id);
+
+        try {
+            $kit->delete();
+            return response()->json(['message' => "Kit '{$kit->name}' deleted."]);
+        } catch (\Throwable $e) {
+            Log::error('kitDestroy failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to delete kit.'], 500);
+        }
+    }
+
+    // ─── CCU / Containers ──────────────────────────────────
+
+    public function ccuIndex(): \Inertia\Response
+    {
+        $ccus = InventoryCcu::with(['warehouse', 'rig'])
+            ->withCount('items')
+            ->orderBy('name')
+            ->paginate(18);
+
+        return Inertia::render('CCU/Index', [
+            'ccus' => $ccus,
+        ]);
+    }
+
+    public function ccuShow(int $id): \Inertia\Response
+    {
+        $ccu = InventoryCcu::with([
+            'warehouse',
+            'rig',
+            'items.inventoryEquipment',
+            'items.inventoryStatus',
+        ])->withCount('items')
+          ->findOrFail($id);
+
+        return Inertia::render('CCU/Show', [
+            'ccu' => $ccu,
+        ]);
+    }
+
+    public function ccuUpdate(Request $request, int $id): JsonResponse
+    {
+        $ccu = InventoryCcu::findOrFail($id);
+
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'container_number' => 'nullable|string|max:100',
+            'container_type' => 'nullable|string|max:100',
+            'warehouse_id' => 'nullable|exists:warehouses,id',
+            'rig_id' => 'nullable|exists:rigs,id',
+            'is_active' => 'nullable|boolean',
+        ]);
+
+        $ccu->update($request->only(['name', 'container_number', 'container_type', 'warehouse_id', 'rig_id', 'is_active']));
+
+        return response()->json([
+            'message' => "Container '{$ccu->name}' updated.",
+            'ccu' => $ccu->fresh(['warehouse', 'rig']),
+        ]);
+    }
+
+    public function ccuDestroy(int $id): JsonResponse
+    {
+        $ccu = InventoryCcu::findOrFail($id);
+
+        if ($ccu->items()->count() > 0) {
+            return response()->json(['message' => 'Cannot delete container that still has items inside.'], 422);
+        }
+
+        try {
+            $ccu->delete();
+            return response()->json(['message' => "Container '{$ccu->name}' deleted."]);
+        } catch (\Throwable $e) {
+            Log::error('ccuDestroy failed', ['id' => $id, 'error' => $e->getMessage()]);
+            return response()->json(['message' => 'Failed to delete container.'], 500);
+        }
+    }
+
     public function trackingValidation()
     {
         return Inertia::render('Admin/TrackingValidation');

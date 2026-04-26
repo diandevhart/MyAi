@@ -61,7 +61,7 @@ async function saveQuote() {
     try {
         await axios.post(route('rfq.store-quote', rfq.value.id), {
             items: editableItems.value.map(ei => ({
-                id: ei.id,
+                supplier_quote_request_item_id: ei.id,
                 unit_price: ei.unit_price,
                 lead_time_days: ei.lead_time_days,
                 notes: ei.notes,

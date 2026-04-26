@@ -57,7 +57,7 @@ class WarehousesController extends Controller
 
         return Inertia::render('Warehouses/Show', [
             'warehouse' => $warehouse,
-            'stats' => $stats,
+            'initialStats' => $stats,
         ]);
     }
 
@@ -120,6 +120,7 @@ class WarehousesController extends Controller
     public function dashboardStats(int $id): JsonResponse
     {
         $stats = $this->stockService->getWarehouseDashboardStats($id);
+        $stats['stock_breakdown'] = $this->stockService->getDetailedStockBreakdownByWarehouse($id);
 
         return response()->json($stats);
     }
@@ -173,6 +174,7 @@ class WarehousesController extends Controller
                     ->groupBy('inventory_statuses.code', 'inventory_statuses.name')
                     ->get()
                     ->toArray(),
+                'stock_breakdown' => $this->stockService->getDetailedStockBreakdownByWarehouse($id),
                 default => [],
             };
 

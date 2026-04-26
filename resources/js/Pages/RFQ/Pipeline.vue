@@ -12,10 +12,12 @@ import axios from 'axios';
 defineOptions({ layout: AppLayout });
 
 const props = defineProps({
-    rfqs: Array,
+    rfqs: Object,
     approvedInternalRequests: { type: Array, default: () => [] },
     suppliers: { type: Array, default: () => [] },
 });
+
+const rfqList = computed(() => props.rfqs?.data || []);
 
 const activeTab = ref('all');
 const tabs = [
@@ -28,8 +30,8 @@ const tabs = [
 ];
 
 const filtered = computed(() => {
-    if (activeTab.value === 'all') return props.rfqs;
-    return props.rfqs.filter(r => r.status === activeTab.value);
+    if (activeTab.value === 'all') return rfqList.value;
+    return rfqList.value.filter(r => r.status === activeTab.value);
 });
 
 function statusColor(status) {

@@ -67,7 +67,7 @@ class SupplierController extends Controller
         $supplier = Supplier::withCount('supplierQuoteRequests')->findOrFail($id);
 
         $orderHistory = SupplierQuoteRequest::where('supplier_id', $id)
-            ->with('internalRfqRequest')
+            ->with(['internalRfqRequest', 'items'])
             ->orderByDesc('created_at')
             ->paginate(15);
 
@@ -147,7 +147,7 @@ class SupplierController extends Controller
 
     public function internalRequestsIndex(Request $request): InertiaResponse
     {
-        $query = InternalRfqRequest::with(['requester', 'warehouse', 'approver'])
+        $query = InternalRfqRequest::with(['requester', 'warehouse', 'approver', 'items.inventoryEquipment'])
             ->withCount('items');
 
         if ($request->filled('status')) {
@@ -269,6 +269,11 @@ class SupplierController extends Controller
         return Inertia::render('RFQ/Pipeline', [
             'rfqs' => $rfqs,
             'filters' => $request->only(['status']),
+            'approvedInternalRequests' => InternalRfqRequest::where('status', 'approved')
+                ->with(['requester', 'warehouse', 'items'])
+                ->orderByDesc('created_at')
+                ->get(),
+            'suppliers' => Supplier::where('is_active', true)->orderBy('name')->get(['id', 'name']),
         ]);
     }
 

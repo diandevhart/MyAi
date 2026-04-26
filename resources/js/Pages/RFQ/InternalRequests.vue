@@ -14,8 +14,10 @@ import axios from 'axios';
 defineOptions({ layout: AppLayout });
 
 const props = defineProps({
-    requests: Array,
+    requests: Object,
 });
+
+const requestList = computed(() => props.requests?.data || []);
 
 const activeTab = ref('all');
 const tabs = [
@@ -29,8 +31,8 @@ const tabs = [
 const expandedRows = ref({});
 
 const filtered = computed(() => {
-    if (activeTab.value === 'all') return props.requests;
-    return props.requests.filter(r => r.status === activeTab.value);
+    if (activeTab.value === 'all') return requestList.value;
+    return requestList.value.filter(r => r.status === activeTab.value);
 });
 
 function statusColor(status) {

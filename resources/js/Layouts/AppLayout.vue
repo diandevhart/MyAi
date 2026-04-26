@@ -24,6 +24,8 @@ const navItems = [
     { label: 'Warehouses', icon: 'pi pi-building', route: 'warehouses.index' },
     { label: 'Equipment Catalogue', icon: 'pi pi-sitemap', route: 'catalogue.index' },
     { label: 'Equipment Finder', icon: 'pi pi-search', route: 'equipment.index' },
+    { label: 'Kits', icon: 'pi pi-th-large', route: 'kits.index' },
+    { label: 'Containers', icon: 'pi pi-server', route: 'ccu.index' },
     { label: 'Suppliers', icon: 'pi pi-truck', route: 'suppliers.index' },
     { label: 'RFQ Pipeline', icon: 'pi pi-file-edit', route: 'rfq.pipeline' },
     { label: 'Internal Requests', icon: 'pi pi-inbox', route: 'rfq.internal.index' },

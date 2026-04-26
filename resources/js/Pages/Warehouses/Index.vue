@@ -17,7 +17,7 @@ const props = defineProps({
 });
 
 const search = ref(props.filters.search || '');
-const activeType = ref(props.filters.warehouse_type || '');
+const activeType = ref(props.filters.type || '');
 const showAddDialog = ref(false);
 
 const form = ref({
@@ -68,7 +68,7 @@ function applyFilters() {
         route('warehouses.index'),
         {
             search: search.value || undefined,
-            warehouse_type: activeType.value || undefined,
+            type: activeType.value || undefined,
         },
         { preserveState: true, replace: true }
     );

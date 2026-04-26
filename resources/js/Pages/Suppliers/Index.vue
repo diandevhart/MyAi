@@ -14,7 +14,7 @@ import axios from 'axios';
 defineOptions({ layout: AppLayout });
 
 const props = defineProps({
-    suppliers: Array,
+    suppliers: Object,
 });
 
 const search = ref('');
@@ -27,10 +27,12 @@ const form = ref({
     payment_terms: '', notes: '',
 });
 
+const supplierList = computed(() => props.suppliers?.data || []);
+
 const filtered = computed(() => {
-    if (!search.value) return props.suppliers;
+    if (!search.value) return supplierList.value;
     const q = search.value.toLowerCase();
-    return props.suppliers.filter(s =>
+    return supplierList.value.filter(s =>
         s.name.toLowerCase().includes(q) ||
         (s.contact_person || '').toLowerCase().includes(q) ||
         (s.email || '').toLowerCase().includes(q) ||

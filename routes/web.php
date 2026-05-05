@@ -2,10 +2,13 @@
 
 use App\Http\Controllers\GroupRequirementController;
 use App\Http\Controllers\InventoryEquipmentController;
+use App\Http\Controllers\AccessControlController;
+use App\Http\Controllers\ProcurementAccessController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\SupplierController;
 use App\Http\Controllers\WarehouseInventoryController;
 use App\Http\Controllers\WarehousesController;
+use App\Http\Controllers\NotificationController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
 
@@ -106,6 +109,16 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::get('/admin/tracking-validation', [WarehouseInventoryController::class, 'trackingValidation'])->name('admin.tracking-validation');
     Route::post('/admin/tracking-validation/run', [WarehouseInventoryController::class, 'runValidation'])->name('admin.run-validation');
     Route::post('/admin/tracking-validation/fix/{checkName}', [WarehouseInventoryController::class, 'runFix'])->name('admin.run-fix');
+    Route::get('/admin/access-control', [AccessControlController::class, 'index'])->name('admin.access-control');
+    Route::post('/admin/access-control', [AccessControlController::class, 'update'])->name('admin.access-control.update');
+    Route::get('/admin/procurement-access', [ProcurementAccessController::class, 'index'])->name('admin.procurement-access');
+    Route::post('/admin/procurement-access', [ProcurementAccessController::class, 'update'])->name('admin.procurement-access.update');
+
+    // Notifications
+    Route::get('/notifications', [NotificationController::class, 'index'])->name('notifications.index');
+    Route::post('/notifications/{id}/read', [NotificationController::class, 'markRead'])->name('notifications.read');
+    Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead'])->name('notifications.read-all');
+    Route::delete('/notifications/{id}', [NotificationController::class, 'destroy'])->name('notifications.destroy');
 });
 
 require __DIR__.'/auth.php';

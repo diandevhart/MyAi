@@ -6,6 +6,7 @@ import DataTable from 'primevue/datatable';
 import Column from 'primevue/column';
 import Dialog from 'primevue/dialog';
 import InputText from 'primevue/inputtext';
+import Textarea from 'primevue/textarea';
 import { toast } from 'vue-toastflow';
 import axios from 'axios';
 
@@ -15,24 +16,49 @@ const props = defineProps({
     rfqs: Object,
     approvedInternalRequests: { type: Array, default: () => [] },
     suppliers: { type: Array, default: () => [] },
+    canManageProcurement: { type: Boolean, default: false },
+    filters: { type: Object, default: () => ({}) },
+    recentActivities: { type: Array, default: () => [] },
 });
 
 const rfqList = computed(() => props.rfqs?.data || []);
 
-const activeTab = ref('all');
+const activeTab = ref(props.filters?.status || 'all');
 const tabs = [
     { key: 'all', label: 'All' },
     { key: 'draft', label: 'Draft' },
     { key: 'sent', label: 'Sent' },
     { key: 'quoted', label: 'Quoted' },
+    { key: 'overdue', label: 'Overdue' },
+    { key: 'stale', label: 'Stale' },
     { key: 'awarded', label: 'Awarded' },
     { key: 'cancelled', label: 'Cancelled' },
 ];
 
+function isOverdue(rfq) {
+    if (!rfq?.due_date) return false;
+    if (!['sent', 'quoted'].includes(rfq.status)) return false;
+    const due = new Date(rfq.due_date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return due < today;
+}
+function isStale(rfq) {
+    return !!rfq?.is_stale;
+}
+
 const filtered = computed(() => {
-    if (activeTab.value === 'all') return rfqList.value;
-    return rfqList.value.filter(r => r.status === activeTab.value);
+    return rfqList.value;
 });
+
+function setTab(tabKey) {
+    activeTab.value = tabKey;
+    router.get(
+        route('rfq.pipeline'),
+        tabKey === 'all' ? {} : { status: tabKey },
+        { preserveState: true, preserveScroll: true, replace: true }
+    );
+}
 
 function statusColor(status) {
     const map = {
@@ -54,6 +80,8 @@ const showCreateDialog = ref(false);
 const createForm = ref({
     internalRfqId: null,
     supplierIds: [],
+    dueDate: '',
+    notes: '',
 });
 
 function toggleSupplier(id) {
@@ -74,6 +102,8 @@ async function submitCreateRfq() {
     try {
         await axios.post(route('rfq.create-from-internal', createForm.value.internalRfqId), {
             supplier_ids: createForm.value.supplierIds,
+            due_date: createForm.value.dueDate || null,
+            notes: createForm.value.notes || null,
         });
         toast.success('RFQ(s) created');
         showCreateDialog.value = false;
@@ -84,8 +114,42 @@ async function submitCreateRfq() {
 }
 
 function openCreateDialog() {
-    createForm.value = { internalRfqId: null, supplierIds: [] };
+    createForm.value = { internalRfqId: null, supplierIds: [], dueDate: '', notes: '' };
     showCreateDialog.value = true;
+}
+
+function formatAction(action) {
+    const map = {
+        internal_request_created: 'Internal request created',
+        internal_request_approved: 'Internal request approved',
+        internal_request_rejected: 'Internal request rejected',
+        supplier_rfq_created: 'Supplier RFQ created',
+        supplier_quote_submitted: 'Supplier quote submitted',
+        supplier_rfq_awarded: 'Supplier RFQ awarded',
+        user_access_updated: 'User access updated',
+    };
+    return map[action] || (action || '').replaceAll('_', ' ');
+}
+
+function formatActivityDetail(activity) {
+    const m = activity?.metadata || {};
+
+    if (activity?.action === 'user_access_updated') {
+        const email = m.target_user_email ? `User: ${m.target_user_email}` : 'User access changed';
+        const roles = Array.isArray(m.after_roles) ? m.after_roles.join(', ') : '';
+        const permissions = Array.isArray(m.after_permissions) ? m.after_permissions.length : 0;
+        return `${email}${roles ? ` | Roles: ${roles}` : ''}${permissions ? ` | Direct perms: ${permissions}` : ''}`;
+    }
+
+    if (activity?.subject_type === 'internal_rfq_request' && activity?.subject_id) {
+        return `Request #${activity.subject_id}`;
+    }
+
+    if (activity?.subject_type === 'supplier_quote_request' && activity?.subject_id) {
+        return `RFQ #${activity.subject_id}`;
+    }
+
+    return 'Procurement timeline event';
 }
 </script>
 
@@ -94,9 +158,24 @@ function openCreateDialog() {
         <!-- Header -->
         <div class="flex items-center justify-between mb-6">
             <h1 class="text-2xl font-bold text-slate-100">RFQ Pipeline</h1>
-            <button @click="openCreateDialog" class="flex items-center gap-2 rounded-lg bg-cyan-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-400 transition-colors">
+            <button v-if="props.canManageProcurement" @click="openCreateDialog" class="flex items-center gap-2 rounded-lg bg-cyan-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-cyan-400 transition-colors">
                 <i class="pi pi-plus text-xs"></i> Create RFQ
             </button>
+            <span v-else class="text-xs text-slate-500">View only</span>
+        </div>
+
+        <!-- Recent Activity -->
+        <div v-if="props.recentActivities.length" class="mb-5 rounded-xl border border-slate-700 bg-slate-800 p-4">
+            <h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Recent Procurement Activity</h3>
+            <div class="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                <div v-for="activity in props.recentActivities.slice(0, 6)" :key="activity.id" class="rounded-lg bg-slate-900 px-3 py-2">
+                    <div class="text-xs text-slate-300 capitalize">{{ formatAction(activity.action) }}</div>
+                    <div class="mt-0.5 text-[11px] text-slate-400">{{ formatActivityDetail(activity) }}</div>
+                    <div class="mt-1 text-[11px] text-slate-500">
+                        {{ activity.user?.name || 'System' }} • {{ new Date(activity.created_at).toLocaleString() }}
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Filter Tabs -->
@@ -104,14 +183,14 @@ function openCreateDialog() {
             <button
                 v-for="tab in tabs"
                 :key="tab.key"
-                @click="activeTab = tab.key"
+                @click="setTab(tab.key)"
                 class="px-4 py-2.5 text-sm font-medium transition-colors"
                 :class="activeTab === tab.key
                     ? 'text-cyan-400 border-b-2 border-cyan-400 bg-cyan-500/10'
                     : 'text-slate-400 hover:text-slate-200 border-b-2 border-transparent'"
             >
                 {{ tab.label }}
-                <span class="ml-1.5 text-xs opacity-60">({{ tab.key === 'all' ? props.rfqs.length : props.rfqs.filter(r => r.status === tab.key).length }})</span>
+                <span v-if="activeTab === tab.key" class="ml-1.5 text-xs opacity-60">({{ rfqList.length }})</span>
             </button>
         </div>
 
@@ -148,19 +227,32 @@ function openCreateDialog() {
                 </Column>
                 <Column field="status" header="Status" sortable>
                     <template #body="{ data }">
-                        <span :class="['inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize', statusColor(data.status)]">
-                            {{ data.status }}
-                        </span>
+                        <div class="flex items-center gap-2">
+                            <span :class="['inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize', statusColor(data.status)]">
+                                {{ data.status }}
+                            </span>
+                            <span v-if="isStale(data)" class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-400">Stale</span>
+                        </div>
                     </template>
                 </Column>
                 <Column field="sent_at" header="Sent Date" sortable>
                     <template #body="{ data }">
-                        <span class="text-xs text-slate-400">{{ data.sent_at ? new Date(data.sent_at).toLocaleDateString() : '—' }}</span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs" :class="isStale(data) ? 'text-amber-400' : 'text-slate-400'">
+                                {{ data.sent_at ? new Date(data.sent_at).toLocaleDateString() : '—' }}
+                            </span>
+                            <span v-if="isStale(data) && activeTab !== 'stale'" class="rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-semibold text-amber-400">Stale</span>
+                        </div>
                     </template>
                 </Column>
                 <Column field="due_date" header="Due Date" sortable>
                     <template #body="{ data }">
-                        <span class="text-xs text-slate-400">{{ data.due_date ? new Date(data.due_date).toLocaleDateString() : '—' }}</span>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xs" :class="isOverdue(data) ? 'text-red-400' : 'text-slate-400'">
+                                {{ data.due_date ? new Date(data.due_date).toLocaleDateString() : '—' }}
+                            </span>
+                            <span v-if="isOverdue(data)" class="rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold text-red-400">Overdue</span>
+                        </div>
                     </template>
                 </Column>
                 <Column header="Actions" style="width: 100px">
@@ -236,6 +328,26 @@ function openCreateDialog() {
                         <div v-if="!suppliers.length" class="text-center py-4 text-sm text-slate-500">
                             No suppliers available.
                         </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 gap-3">
+                    <div>
+                        <label class="mb-1 block text-xs font-medium text-slate-400">Due Date (optional)</label>
+                        <InputText
+                            v-model="createForm.dueDate"
+                            type="date"
+                            class="w-full !bg-slate-900 !border-slate-700 !text-slate-100 rounded-lg"
+                        />
+                    </div>
+                    <div>
+                        <label class="mb-1 block text-xs font-medium text-slate-400">RFQ Notes (optional)</label>
+                        <Textarea
+                            v-model="createForm.notes"
+                            rows="2"
+                            class="w-full !bg-slate-900 !border-slate-700 !text-slate-100 rounded-lg"
+                            placeholder="Add instructions for suppliers"
+                        />
                     </div>
                 </div>
             </div>

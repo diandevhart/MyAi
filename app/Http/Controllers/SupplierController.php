@@ -7,9 +7,14 @@ use App\Models\GroupRequirement;
 use App\Models\InternalRfqRequest;
 use App\Models\InternalRfqRequestItem;
 use App\Models\InventoryEquipment;
+use App\Models\ProcurementActivity;
 use App\Models\Supplier;
 use App\Models\SupplierQuoteRequest;
 use App\Models\SupplierQuoteRequestItem;
+use App\Models\User;
+use App\Notifications\ProcurementNotification;
+use App\Models\Warehouse;
+use App\Services\ProcurementAuditService;
 use App\Services\StockLevelService;
 use App\Traits\GeneratesPartNumbers;
 use Illuminate\Http\JsonResponse;
@@ -18,6 +23,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Carbon;
 use Inertia\Inertia;
 use Inertia\Response as InertiaResponse;
 
@@ -26,7 +32,8 @@ class SupplierController extends Controller
     use GeneratesPartNumbers;
 
     public function __construct(
-        protected StockLevelService $stockService
+        protected StockLevelService $stockService,
+        protected ProcurementAuditService $auditService
     ) {}
 
     // ─── SUPPLIER CRUD ───────────────────────────────────────
@@ -161,6 +168,20 @@ class SupplierController extends Controller
         return Inertia::render('RFQ/InternalRequests', [
             'requests' => $requests,
             'filters' => $request->only(['status']),
+            'warehouses' => Warehouse::where('is_active', true)
+                ->orderBy('name')
+                ->get(['id', 'name', 'code']),
+            'equipmentOptions' => InventoryEquipment::where('is_active', true)
+                ->orderBy('name')
+                ->get(['id', 'name', 'part_number']),
+            'canApproveInternalRequests' => $this->canManageProcurement(),
+            'managedWarehouseIds' => $this->canManageProcurement()
+                ? Auth::user()->managedWarehouses()->pluck('warehouses.id')->toArray()
+                : [],
+            'recentActivities' => ProcurementActivity::with('user:id,name')
+                ->latest()
+                ->limit(12)
+                ->get(['id', 'user_id', 'action', 'subject_type', 'subject_id', 'metadata', 'created_at']),
         ]);
     }
 
@@ -178,6 +199,17 @@ class SupplierController extends Controller
             'items.*.new_item_unit' => 'nullable|string|max:50',
             'items.*.new_item_estimated_budget' => 'nullable|numeric|min:0',
         ]);
+
+        foreach ($request->input('items', []) as $index => $item) {
+            $hasEquipment = !empty($item['inventory_equipment_id']);
+            $hasNewName = !empty($item['new_item_name']);
+
+            if (!$hasEquipment && !$hasNewName) {
+                return redirect()->back()->withErrors([
+                    "items.$index.new_item_name" => 'Each line item requires either existing equipment or a new item name.',
+                ]);
+            }
+        }
 
         try {
             DB::beginTransaction();
@@ -205,6 +237,28 @@ class SupplierController extends Controller
 
             DB::commit();
 
+            $this->auditService->log(
+                Auth::id(),
+                'internal_request_created',
+                'internal_rfq_request',
+                $rfqRequest->id,
+                $rfqRequest->id,
+                null,
+                [
+                    'warehouse_id' => $rfqRequest->warehouse_id,
+                    'urgency' => $rfqRequest->urgency,
+                    'items_count' => count($request->input('items', [])),
+                ]
+            );
+            $this->notifyProcurementUsers(
+                'internal_request_created',
+                'New Internal Request',
+                'Internal request #' . $rfqRequest->id . ' was created and awaits review.',
+                route('rfq.internal.index', ['status' => 'pending']),
+                'Review request',
+                ['internal_request_id' => $rfqRequest->id]
+            );
+
             return redirect()->route('rfq.internal.index');
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -215,7 +269,15 @@ class SupplierController extends Controller
 
     public function approveInternalRequest(int $id): JsonResponse
     {
+        if (!$this->canManageProcurement()) {
+            return response()->json(['message' => 'You are not authorized to approve requests.'], 403);
+        }
+
         $rfqRequest = InternalRfqRequest::findOrFail($id);
+
+        if ($rfqRequest->warehouse_id && !Auth::user()->managesWarehouse($rfqRequest->warehouse_id)) {
+            return response()->json(['message' => 'You do not manage the warehouse for this request.'], 403);
+        }
 
         if ($rfqRequest->status !== 'pending') {
             return response()->json(['message' => 'Only pending requests can be approved.'], 422);
@@ -227,16 +289,41 @@ class SupplierController extends Controller
             'approved_at' => now(),
         ]);
 
+        $this->auditService->log(
+            Auth::id(),
+            'internal_request_approved',
+            'internal_rfq_request',
+            $rfqRequest->id,
+            $rfqRequest->id
+        );
+
+        $this->notifyProcurementUsers(
+            'internal_request_approved',
+            'Internal Request Approved',
+            'Internal request #' . $rfqRequest->id . ' has been approved.',
+            route('rfq.internal.index', ['status' => 'approved']),
+            'View approvals',
+            ['internal_request_id' => $rfqRequest->id]
+        );
+
         return response()->json(['message' => 'Internal request approved.']);
     }
 
     public function rejectInternalRequest(Request $request, int $id): JsonResponse
     {
+        if (!$this->canManageProcurement()) {
+            return response()->json(['message' => 'You are not authorized to reject requests.'], 403);
+        }
+
         $request->validate([
             'rejection_reason' => 'required|string',
         ]);
 
         $rfqRequest = InternalRfqRequest::findOrFail($id);
+
+        if ($rfqRequest->warehouse_id && !Auth::user()->managesWarehouse($rfqRequest->warehouse_id)) {
+            return response()->json(['message' => 'You do not manage the warehouse for this request.'], 403);
+        }
 
         if ($rfqRequest->status !== 'pending') {
             return response()->json(['message' => 'Only pending requests can be rejected.'], 422);
@@ -248,6 +335,25 @@ class SupplierController extends Controller
             'rejection_reason' => $request->input('rejection_reason'),
         ]);
 
+        $this->auditService->log(
+            Auth::id(),
+            'internal_request_rejected',
+            'internal_rfq_request',
+            $rfqRequest->id,
+            $rfqRequest->id,
+            null,
+            ['reason' => $request->input('rejection_reason')]
+        );
+
+        $this->notifyProcurementUsers(
+            'internal_request_rejected',
+            'Internal Request Rejected',
+            'Internal request #' . $rfqRequest->id . ' was rejected.',
+            route('rfq.internal.index', ['status' => 'rejected']),
+            'View rejected',
+            ['internal_request_id' => $rfqRequest->id]
+        );
+
         return response()->json(['message' => 'Internal request rejected.']);
     }
 
@@ -255,16 +361,39 @@ class SupplierController extends Controller
 
     public function rfqPipelineIndex(Request $request): InertiaResponse
     {
+        $staleThresholdDays = 7;
+        $staleDate = now()->subDays($staleThresholdDays)->toDateString();
+
         $query = SupplierQuoteRequest::with(['supplier', 'internalRfqRequest'])
-            ->withCount('items');
+            ->withCount('items')
+            ->withCount(['items as unpriced_items_count' => fn($q) => $q->whereNull('unit_price')]);
 
         if ($request->filled('status')) {
-            $query->where('status', $request->input('status'));
+            if ($request->input('status') === 'overdue') {
+                $query->whereIn('status', ['sent', 'quoted'])
+                    ->whereDate('due_date', '<', now()->toDateString());
+            } elseif ($request->input('status') === 'stale') {
+                $query->where('status', 'sent')
+                    ->whereDate('sent_at', '<', $staleDate);
+            } else {
+                $query->where('status', $request->input('status'));
+            }
         }
 
         $rfqs = $query->orderByDesc('created_at')
             ->paginate(20)
             ->withQueryString();
+
+        // Append computed flags
+        $rfqs->getCollection()->transform(function ($rfq) use ($staleDate) {
+            $rfq->is_stale = $rfq->status === 'sent'
+                && $rfq->sent_at
+                && Carbon::parse($rfq->sent_at)->lt(Carbon::parse($staleDate));
+            $rfq->is_overdue = $rfq->due_date
+                && Carbon::parse($rfq->due_date)->lt(now()->startOfDay())
+                && in_array($rfq->status, ['sent', 'quoted']);
+            return $rfq;
+        });
 
         return Inertia::render('RFQ/Pipeline', [
             'rfqs' => $rfqs,
@@ -274,14 +403,25 @@ class SupplierController extends Controller
                 ->orderByDesc('created_at')
                 ->get(),
             'suppliers' => Supplier::where('is_active', true)->orderBy('name')->get(['id', 'name']),
+            'canManageProcurement' => $this->canManageProcurement(),
+            'recentActivities' => ProcurementActivity::with('user:id,name')
+                ->latest()
+                ->limit(12)
+                ->get(['id', 'user_id', 'action', 'subject_type', 'subject_id', 'metadata', 'created_at']),
         ]);
     }
 
     public function createRfqFromInternalRequest(Request $request, int $internalRfqId): JsonResponse
     {
+        if (!$this->canManageProcurement()) {
+            return response()->json(['message' => 'You are not authorized to create RFQs.'], 403);
+        }
+
         $request->validate([
             'supplier_ids' => 'required|array|min:1',
             'supplier_ids.*' => 'exists:suppliers,id',
+            'due_date' => 'nullable|date|after_or_equal:today',
+            'notes' => 'nullable|string',
         ]);
 
         $internalRequest = InternalRfqRequest::with('items')->findOrFail($internalRfqId);
@@ -296,6 +436,15 @@ class SupplierController extends Controller
             DB::beginTransaction();
 
             foreach ($request->input('supplier_ids') as $supplierId) {
+                $alreadyOpen = SupplierQuoteRequest::where('internal_rfq_request_id', $internalRequest->id)
+                    ->where('supplier_id', $supplierId)
+                    ->whereIn('status', ['draft', 'sent', 'quoted'])
+                    ->exists();
+
+                if ($alreadyOpen) {
+                    continue;
+                }
+
                 $rfqNumber = $this->generateRfqNumber();
 
                 $rfq = SupplierQuoteRequest::create([
@@ -304,6 +453,8 @@ class SupplierController extends Controller
                     'rfq_number' => $rfqNumber,
                     'status' => 'sent',
                     'sent_at' => now(),
+                    'due_date' => $request->input('due_date'),
+                    'notes' => $request->input('notes'),
                 ]);
 
                 foreach ($internalRequest->items as $item) {
@@ -317,9 +468,39 @@ class SupplierController extends Controller
                 }
 
                 $createdIds[] = $rfq->id;
+
+                $this->auditService->log(
+                    Auth::id(),
+                    'supplier_rfq_created',
+                    'supplier_quote_request',
+                    $rfq->id,
+                    $internalRequest->id,
+                    $rfq->id,
+                    [
+                        'supplier_id' => $supplierId,
+                        'due_date' => $request->input('due_date'),
+                    ]
+                );
+
+                $supplierName = Supplier::where('id', $supplierId)->value('name') ?? ('Supplier #' . $supplierId);
+                $this->notifyProcurementUsers(
+                    'supplier_rfq_created',
+                    'RFQ Created',
+                    'RFQ ' . $rfq->rfq_number . ' was sent to ' . $supplierName . '.',
+                    route('rfq.show', $rfq->id),
+                    'Open RFQ',
+                    ['rfq_id' => $rfq->id, 'supplier_id' => $supplierId]
+                );
             }
 
             DB::commit();
+
+            if (count($createdIds) === 0) {
+                return response()->json([
+                    'message' => 'No RFQs created. Selected suppliers already have open RFQs for this request.',
+                    'rfq_ids' => [],
+                ], 422);
+            }
 
             return response()->json([
                 'message' => count($createdIds) . ' RFQ(s) created and sent.',
@@ -341,8 +522,15 @@ class SupplierController extends Controller
             'files',
         ])->findOrFail($id);
 
+        $incompleteItemCount = $rfq->items->whereNull('unit_price')->count();
+
         return Inertia::render('RFQ/Show', [
             'rfq' => $rfq,
+            'canManageProcurement' => $this->canManageProcurement(),
+            'isOverdue' => $rfq->due_date
+                ? Carbon::parse($rfq->due_date)->lt(now()->startOfDay()) && in_array($rfq->status, ['sent', 'quoted'])
+                : false,
+            'incompleteItemCount' => $incompleteItemCount,
         ]);
     }
 
@@ -358,6 +546,10 @@ class SupplierController extends Controller
         ]);
 
         $rfq = SupplierQuoteRequest::findOrFail($id);
+
+        if ($rfq->status !== 'sent') {
+            return response()->json(['message' => 'Only sent RFQs can be quoted.'], 422);
+        }
 
         try {
             DB::beginTransaction();
@@ -382,6 +574,25 @@ class SupplierController extends Controller
             $rfq->update($updateData);
 
             DB::commit();
+
+            $this->auditService->log(
+                Auth::id(),
+                'supplier_quote_submitted',
+                'supplier_quote_request',
+                $rfq->id,
+                $rfq->internal_rfq_request_id,
+                $rfq->id,
+                ['items_count' => count($request->input('items', []))]
+            );
+
+            $this->notifyProcurementUsers(
+                'supplier_quote_submitted',
+                'Supplier Quote Submitted',
+                'Quote submitted for RFQ ' . $rfq->rfq_number . '.',
+                route('rfq.show', $rfq->id),
+                'Review quote',
+                ['rfq_id' => $rfq->id]
+            );
 
             return response()->json(['message' => 'Supplier quote recorded.']);
         } catch (\Throwable $e) {
@@ -445,10 +656,22 @@ class SupplierController extends Controller
 
     public function selectWinningQuote(int $id): JsonResponse
     {
-        $rfq = SupplierQuoteRequest::findOrFail($id);
+        if (!$this->canManageProcurement()) {
+            return response()->json(['message' => 'You are not authorized to award RFQs.'], 403);
+        }
+
+        $rfq = SupplierQuoteRequest::with('items')->findOrFail($id);
 
         if (!in_array($rfq->status, ['quoted', 'sent'])) {
             return response()->json(['message' => 'Only quoted or sent RFQs can be awarded.'], 422);
+        }
+
+        $incompleteCount = $rfq->items->whereNull('unit_price')->count();
+        if ($incompleteCount > 0) {
+            return response()->json([
+                'message' => "Cannot award: {$incompleteCount} line item(s) are missing a unit price.",
+                'incomplete_item_count' => $incompleteCount,
+            ], 422);
         }
 
         try {
@@ -466,6 +689,25 @@ class SupplierController extends Controller
                 ->update(['status' => 'cancelled']);
 
             DB::commit();
+
+            $this->auditService->log(
+                Auth::id(),
+                'supplier_rfq_awarded',
+                'supplier_quote_request',
+                $rfq->id,
+                $rfq->internal_rfq_request_id,
+                $rfq->id,
+                ['supplier_id' => $rfq->supplier_id]
+            );
+
+            $this->notifyProcurementUsers(
+                'supplier_rfq_awarded',
+                'RFQ Awarded',
+                'RFQ ' . $rfq->rfq_number . ' was awarded to supplier #' . $rfq->supplier_id . '.',
+                route('rfq.show', $rfq->id),
+                'View award',
+                ['rfq_id' => $rfq->id, 'supplier_id' => $rfq->supplier_id]
+            );
 
             return response()->json(['message' => 'RFQ awarded to supplier.']);
         } catch (\Throwable $e) {
@@ -593,4 +835,50 @@ class SupplierController extends Controller
 
         return $datePrefix . str_pad($nextSeq, 4, '0', STR_PAD_LEFT);
     }
+
+    protected function canManageProcurement(): bool
+    {
+        $user = Auth::user();
+        if (!$user) {
+            return false;
+        }
+
+        // Development fallback until role/permission seeders are introduced.
+        if ((int) $user->id === 1) {
+            return true;
+        }
+
+        return $user->hasAnyRole(['Super Admin', 'Admin', 'Procurement Manager'])
+            || $user->can('rfq.manage')
+            || $user->can('rfq.approve')
+            || $user->can('rfq.award');
+    }
+
+    protected function notifyProcurementUsers(
+            string $type,
+            string $title,
+            string $message,
+            ?string $actionUrl = null,
+            ?string $actionLabel = null,
+            array $meta = []
+        ): void {
+            try {
+                $users = User::role(['Super Admin', 'Admin', 'Procurement Manager'])->get();
+                foreach ($users as $user) {
+                    $user->notify(new ProcurementNotification(
+                        type: $type,
+                        title: $title,
+                        message: $message,
+                        actionUrl: $actionUrl,
+                        actionLabel: $actionLabel,
+                        meta: $meta,
+                    ));
+                }
+            } catch (\Throwable $e) {
+                Log::warning('Procurement notification dispatch failed', [
+                    'type' => $type,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
 }

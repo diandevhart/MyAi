@@ -26,6 +26,7 @@ class DatabaseSeeder extends Seeder
             GroupRequirementSeeder::class,
             InventoryStatusSeeder::class,
             EquipmentTrackingStatusSeeder::class,
+            RolePermissionSeeder::class,
             WarehouseSeeder::class,
         ]);
     }

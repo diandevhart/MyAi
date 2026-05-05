@@ -15,11 +15,24 @@ defineOptions({ layout: AppLayout });
 
 const props = defineProps({
     requests: Object,
+    warehouses: { type: Array, default: () => [] },
+    equipmentOptions: { type: Array, default: () => [] },
+    canApproveInternalRequests: { type: Boolean, default: false },
+    managedWarehouseIds: { type: Array, default: () => [] },
+    filters: { type: Object, default: () => ({}) },
+    recentActivities: { type: Array, default: () => [] },
 });
 
 const requestList = computed(() => props.requests?.data || []);
+// Per-row: can user approve this specific request?
+function canApproveRow(row) {
+    if (!props.canApproveInternalRequests) return false;
+    // Empty managedWarehouseIds = global manager (manages all)
+    if (!props.managedWarehouseIds.length) return true;
+    return props.managedWarehouseIds.includes(row.warehouse_id);
+}
 
-const activeTab = ref('all');
+const activeTab = ref(props.filters?.status || 'all');
 const tabs = [
     { key: 'all', label: 'All' },
     { key: 'pending', label: 'Pending' },
@@ -31,9 +44,17 @@ const tabs = [
 const expandedRows = ref({});
 
 const filtered = computed(() => {
-    if (activeTab.value === 'all') return requestList.value;
-    return requestList.value.filter(r => r.status === activeTab.value);
+    return requestList.value;
 });
+
+function setTab(tabKey) {
+    activeTab.value = tabKey;
+    router.get(
+        route('rfq.internal.index'),
+        tabKey === 'all' ? {} : { status: tabKey },
+        { preserveState: true, preserveScroll: true, replace: true }
+    );
+}
 
 function statusColor(status) {
     const map = {
@@ -93,11 +114,25 @@ const newForm = ref({
     warehouse_id: null,
     urgency: 'medium',
     notes: '',
-    items: [{ inventory_equipment_id: null, quantity: 1, new_item_name: '', new_item_description: '', estimated_budget: null }],
+    items: [{ inventory_equipment_id: null, quantity: 1, new_item_name: '', new_item_description: '', new_item_estimated_budget: null }],
 });
 
+const warehouseOptions = computed(() =>
+    props.warehouses.map(w => ({
+        label: `${w.name}${w.code ? ` (${w.code})` : ''}`,
+        value: w.id,
+    }))
+);
+
+const equipmentSelectOptions = computed(() =>
+    props.equipmentOptions.map(eq => ({
+        label: `${eq.name}${eq.part_number ? ` [${eq.part_number}]` : ''}`,
+        value: eq.id,
+    }))
+);
+
 function addItem() {
-    newForm.value.items.push({ inventory_equipment_id: null, quantity: 1, new_item_name: '', new_item_description: '', estimated_budget: null });
+    newForm.value.items.push({ inventory_equipment_id: null, quantity: 1, new_item_name: '', new_item_description: '', new_item_estimated_budget: null });
 }
 
 function removeItem(idx) {
@@ -105,6 +140,11 @@ function removeItem(idx) {
 }
 
 async function submitNewRequest() {
+    if (!newForm.value.items.some(i => i.inventory_equipment_id || i.new_item_name?.trim())) {
+        toast.error('Add at least one item with equipment or new item name');
+        return;
+    }
+
     try {
         await axios.post(route('rfq.internal.store'), newForm.value);
         toast.success('Request created');
@@ -121,6 +161,40 @@ const urgencyOptions = [
     { label: 'High', value: 'high' },
     { label: 'Critical', value: 'critical' },
 ];
+
+function formatAction(action) {
+    const map = {
+        internal_request_created: 'Internal request created',
+        internal_request_approved: 'Internal request approved',
+        internal_request_rejected: 'Internal request rejected',
+        supplier_rfq_created: 'Supplier RFQ created',
+        supplier_quote_submitted: 'Supplier quote submitted',
+        supplier_rfq_awarded: 'Supplier RFQ awarded',
+        user_access_updated: 'User access updated',
+    };
+    return map[action] || (action || '').replaceAll('_', ' ');
+}
+
+function formatActivityDetail(activity) {
+    const m = activity?.metadata || {};
+
+    if (activity?.action === 'user_access_updated') {
+        const email = m.target_user_email ? `User: ${m.target_user_email}` : 'User access changed';
+        const roles = Array.isArray(m.after_roles) ? m.after_roles.join(', ') : '';
+        const permissions = Array.isArray(m.after_permissions) ? m.after_permissions.length : 0;
+        return `${email}${roles ? ` | Roles: ${roles}` : ''}${permissions ? ` | Direct perms: ${permissions}` : ''}`;
+    }
+
+    if (activity?.subject_type === 'internal_rfq_request' && activity?.subject_id) {
+        return `Request #${activity.subject_id}`;
+    }
+
+    if (activity?.subject_type === 'supplier_quote_request' && activity?.subject_id) {
+        return `RFQ #${activity.subject_id}`;
+    }
+
+    return 'Procurement timeline event';
+}
 </script>
 
 <template>
@@ -133,19 +207,33 @@ const urgencyOptions = [
             </button>
         </div>
 
+        <!-- Recent Activity -->
+        <div v-if="props.recentActivities.length" class="mb-5 rounded-xl border border-slate-700 bg-slate-800 p-4">
+            <h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Recent Procurement Activity</h3>
+            <div class="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+                <div v-for="activity in props.recentActivities.slice(0, 6)" :key="activity.id" class="rounded-lg bg-slate-900 px-3 py-2">
+                    <div class="text-xs text-slate-300 capitalize">{{ formatAction(activity.action) }}</div>
+                    <div class="mt-0.5 text-[11px] text-slate-400">{{ formatActivityDetail(activity) }}</div>
+                    <div class="mt-1 text-[11px] text-slate-500">
+                        {{ activity.user?.name || 'System' }} • {{ new Date(activity.created_at).toLocaleString() }}
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Filter Tabs -->
         <div class="mb-5 flex gap-1 border-b border-slate-700">
             <button
                 v-for="tab in tabs"
                 :key="tab.key"
-                @click="activeTab = tab.key"
+                @click="setTab(tab.key)"
                 class="px-4 py-2.5 text-sm font-medium transition-colors"
                 :class="activeTab === tab.key
                     ? 'text-cyan-400 border-b-2 border-cyan-400 bg-cyan-500/10'
                     : 'text-slate-400 hover:text-slate-200 border-b-2 border-transparent'"
             >
                 {{ tab.label }}
-                <span class="ml-1.5 text-xs opacity-60">({{ tab.key === 'all' ? props.requests.length : props.requests.filter(r => r.status === tab.key).length }})</span>
+                <span class="ml-1.5 text-xs opacity-60">({{ tab.key === 'all' ? requestList.length : requestList.filter(r => r.status === tab.key).length }})</span>
             </button>
         </div>
 
@@ -204,12 +292,13 @@ const urgencyOptions = [
                 <Column header="Actions" style="width: 160px">
                     <template #body="{ data }">
                         <div class="flex items-center gap-2">
-                            <button v-if="data.status === 'pending'" @click="approveRequest(data.id)" class="rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/30 transition-colors">
+                            <button v-if="canApproveRow(data) && data.status === 'pending'" @click="approveRequest(data.id)" class="rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-semibold text-emerald-400 hover:bg-emerald-500/30 transition-colors">
                                 Approve
                             </button>
-                            <button v-if="data.status === 'pending'" @click="openReject(data.id)" class="rounded-lg bg-red-500/20 px-3 py-1.5 text-xs font-semibold text-red-400 hover:bg-red-500/30 transition-colors">
+                            <button v-if="canApproveRow(data) && data.status === 'pending'" @click="openReject(data.id)" class="rounded-lg bg-red-500/20 px-3 py-1.5 text-xs font-semibold text-red-400 hover:bg-red-500/30 transition-colors">
                                 Reject
                             </button>
+                            <span v-if="!canApproveRow(data) && data.status === 'pending'" class="text-xs text-slate-500">View only</span>
                         </div>
                     </template>
                 </Column>
@@ -227,8 +316,8 @@ const urgencyOptions = [
                                     <span v-if="item.new_item_name && !item.inventory_equipment_id" class="ml-2 text-xs bg-violet-500/20 text-violet-400 rounded-full px-2 py-0.5">New</span>
                                 </div>
                                 <div class="text-sm text-slate-400">Qty: {{ item.quantity }}</div>
-                                <div v-if="item.estimated_budget" class="text-sm text-slate-400">
-                                    Budget: R {{ Number(item.estimated_budget).toLocaleString('en-ZA', { minimumFractionDigits: 2 }) }}
+                                <div v-if="item.new_item_estimated_budget" class="text-sm text-slate-400">
+                                    Budget: R {{ Number(item.new_item_estimated_budget).toLocaleString('en-ZA', { minimumFractionDigits: 2 }) }}
                                 </div>
                             </div>
                         </div>
@@ -272,8 +361,16 @@ const urgencyOptions = [
             <div class="space-y-4">
                 <div class="grid grid-cols-2 gap-4">
                     <div>
-                        <label class="mb-1 block text-xs font-medium text-slate-400">Warehouse ID *</label>
-                        <InputText v-model.number="newForm.warehouse_id" type="number" class="w-full !bg-slate-900 !border-slate-700 !text-slate-100 rounded-lg" placeholder="Warehouse ID" />
+                        <label class="mb-1 block text-xs font-medium text-slate-400">Warehouse *</label>
+                        <Select
+                            v-model="newForm.warehouse_id"
+                            :options="warehouseOptions"
+                            optionLabel="label"
+                            optionValue="value"
+                            filter
+                            class="w-full !bg-slate-900 !border-slate-700 !text-slate-100 rounded-lg"
+                            placeholder="Select warehouse"
+                        />
                     </div>
                     <div>
                         <label class="mb-1 block text-xs font-medium text-slate-400">Urgency</label>
@@ -294,21 +391,34 @@ const urgencyOptions = [
                     <div class="space-y-3">
                         <div v-for="(item, idx) in newForm.items" :key="idx" class="rounded-lg border border-slate-700 bg-slate-900 p-3">
                             <div class="grid grid-cols-3 gap-3">
+                                <div class="col-span-3">
+                                    <label class="mb-1 block text-[10px] text-slate-500">Existing Equipment (optional)</label>
+                                    <Select
+                                        v-model="item.inventory_equipment_id"
+                                        :options="equipmentSelectOptions"
+                                        optionLabel="label"
+                                        optionValue="value"
+                                        filter
+                                        showClear
+                                        class="w-full !bg-slate-800 !border-slate-600 !text-slate-100 rounded-lg text-sm"
+                                        placeholder="Select existing equipment"
+                                    />
+                                </div>
                                 <div class="col-span-2">
                                     <label class="mb-1 block text-[10px] text-slate-500">Item Name (new)</label>
-                                    <InputText v-model="item.new_item_name" class="w-full !bg-slate-800 !border-slate-600 !text-slate-100 rounded-lg text-sm" placeholder="New item name" />
+                                    <InputText v-model="item.new_item_name" :disabled="!!item.inventory_equipment_id" class="w-full !bg-slate-800 !border-slate-600 !text-slate-100 rounded-lg text-sm" placeholder="New item name" />
                                 </div>
                                 <div>
                                     <label class="mb-1 block text-[10px] text-slate-500">Quantity</label>
                                     <InputText v-model.number="item.quantity" type="number" min="1" class="w-full !bg-slate-800 !border-slate-600 !text-slate-100 rounded-lg text-sm" />
                                 </div>
-                                <div>
-                                    <label class="mb-1 block text-[10px] text-slate-500">Est. Budget</label>
-                                    <InputText v-model.number="item.estimated_budget" type="number" step="0.01" class="w-full !bg-slate-800 !border-slate-600 !text-slate-100 rounded-lg text-sm" />
+                                <div class="col-span-3">
+                                    <label class="mb-1 block text-[10px] text-slate-500">New Item Description</label>
+                                    <InputText v-model="item.new_item_description" :disabled="!!item.inventory_equipment_id" class="w-full !bg-slate-800 !border-slate-600 !text-slate-100 rounded-lg text-sm" placeholder="Optional description for new item" />
                                 </div>
                                 <div>
-                                    <label class="mb-1 block text-[10px] text-slate-500">Equipment ID</label>
-                                    <InputText v-model.number="item.inventory_equipment_id" type="number" class="w-full !bg-slate-800 !border-slate-600 !text-slate-100 rounded-lg text-sm" placeholder="Optional" />
+                                    <label class="mb-1 block text-[10px] text-slate-500">Est. Budget</label>
+                                    <InputText v-model.number="item.new_item_estimated_budget" type="number" step="0.01" class="w-full !bg-slate-800 !border-slate-600 !text-slate-100 rounded-lg text-sm" />
                                 </div>
                                 <div class="flex items-end">
                                     <button v-if="newForm.items.length > 1" @click="removeItem(idx)" class="rounded-lg text-red-400 hover:text-red-300 text-sm px-2 py-1.5">

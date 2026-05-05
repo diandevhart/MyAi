@@ -59,17 +59,47 @@ class GroupRequirementController extends Controller
         ]);
 
         $level = 0;
+        $parentId = $request->input('parent_id');
+
         if ($request->filled('parent_id')) {
-            $parent = GroupRequirement::findOrFail($request->input('parent_id'));
+            $parent = GroupRequirement::findOrFail($parentId);
+
+            if ($parent->type !== 'group') {
+                return redirect()->back()->withErrors([
+                    'parent_id' => 'Only group nodes can have children.',
+                ]);
+            }
+
             $level = $parent->level + 1;
         }
 
+        $name = trim((string) $request->input('name'));
+        $siblingDup = GroupRequirement::whereRaw('LOWER(name) = ?', [mb_strtolower($name)])
+            ->where(function ($q) use ($parentId) {
+                if ($parentId) {
+                    $q->where('parent_id', $parentId);
+                } else {
+                    $q->whereNull('parent_id');
+                }
+            })
+            ->exists();
+
+        if ($siblingDup) {
+            return redirect()->back()->withErrors([
+                'name' => 'A node with this name already exists at the same level.',
+            ]);
+        }
+
+        $nextSortOrder = GroupRequirement::where('parent_id', $parentId)->max('sort_order');
+
         GroupRequirement::create([
-            'name' => $request->input('name'),
+            'name' => $name,
             'type' => $request->input('type'),
-            'parent_id' => $request->input('parent_id'),
+            'parent_id' => $parentId,
             'level' => $level,
             'description' => $request->input('description'),
+            'sort_order' => is_null($nextSortOrder) ? 0 : $nextSortOrder + 1,
+            'is_active' => true,
         ]);
 
         return redirect()->back();
@@ -97,8 +127,26 @@ class GroupRequirementController extends Controller
             }
         }
 
+        $name = trim((string) $request->input('name'));
+        $siblingDup = GroupRequirement::whereRaw('LOWER(name) = ?', [mb_strtolower($name)])
+            ->where('id', '!=', $node->id)
+            ->where(function ($q) use ($node) {
+                if ($node->parent_id) {
+                    $q->where('parent_id', $node->parent_id);
+                } else {
+                    $q->whereNull('parent_id');
+                }
+            })
+            ->exists();
+
+        if ($siblingDup) {
+            return redirect()->back()->withErrors([
+                'name' => 'A node with this name already exists at the same level.',
+            ]);
+        }
+
         $node->update([
-            'name' => $request->input('name'),
+            'name' => $name,
             'type' => $request->input('type'),
             'description' => $request->input('description'),
         ]);

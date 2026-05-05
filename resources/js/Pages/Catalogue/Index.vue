@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, watch } from 'vue';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import { router } from '@inertiajs/vue3';
 import Dialog from 'primevue/dialog';
 import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
@@ -62,7 +63,7 @@ async function toggleExpand(node) {
             }));
             node.loaded = true;
         } catch {
-            toast({ type: 'error', message: 'Failed to load children.' });
+            toast.error('Failed to load children.');
         } finally {
             node.loading = false;
         }
@@ -131,7 +132,7 @@ function onSearch() {
             const { data } = await axios.get(route('catalogue.search', { q: searchQuery.value }));
             searchResults.value = data;
         } catch {
-            toast({ type: 'error', message: 'Search failed.' });
+            toast.error('Search failed.');
         } finally {
             searchLoading.value = false;
         }
@@ -201,31 +202,43 @@ function openEdit() {
 
 async function submitDialog() {
     dialogSubmitting.value = true;
-    try {
-        if (dialogMode.value === 'create') {
-            await axios.post(route('catalogue.store'), {
-                name: dialogForm.name,
-                type: dialogForm.type,
-                description: dialogForm.description,
-                parent_id: dialogForm.parent_id,
-            });
-            toast({ type: 'success', message: 'Node created.' });
-        } else {
-            await axios.put(route('catalogue.update', { id: selectedNode.value.id }), {
-                name: dialogForm.name,
-                type: dialogForm.type,
-                description: dialogForm.description,
-            });
-            toast({ type: 'success', message: 'Node updated.' });
+    const payload = dialogMode.value === 'create'
+        ? {
+            name: dialogForm.name,
+            type: dialogForm.type,
+            description: dialogForm.description,
+            parent_id: dialogForm.parent_id,
         }
-        dialogVisible.value = false;
-        // Reload page to refresh tree
-        window.location.reload();
-    } catch (err) {
-        const msg = err.response?.data?.message || err.response?.data?.errors?.type?.[0] || 'Operation failed.';
-        toast({ type: 'error', message: msg });
-    } finally {
+        : {
+            name: dialogForm.name,
+            type: dialogForm.type,
+            description: dialogForm.description,
+        };
+
+    const finish = () => {
         dialogSubmitting.value = false;
+    };
+
+    const options = {
+        preserveScroll: true,
+        onSuccess: () => {
+            toast.success(dialogMode.value === 'create' ? 'Node created.' : 'Node updated.');
+            dialogVisible.value = false;
+            router.reload({ only: ['rootNodes'] });
+            finish();
+        },
+        onError: (errors) => {
+            const msg = errors?.name || errors?.type || errors?.delete || 'Operation failed.';
+            toast.error(Array.isArray(msg) ? msg[0] : msg);
+            finish();
+        },
+        onFinish: finish,
+    };
+
+    if (dialogMode.value === 'create') {
+        router.post(route('catalogue.store'), payload, options);
+    } else {
+        router.put(route('catalogue.update', { id: selectedNode.value.id }), payload, options);
     }
 }
 
@@ -234,12 +247,12 @@ async function deleteNode() {
     if (!confirm(`Delete "${selectedNode.value.name}"?`)) return;
     try {
         await axios.delete(route('catalogue.destroy', { id: selectedNode.value.id }));
-        toast({ type: 'success', message: 'Node deleted.' });
+        toast.success('Node deleted.');
         selectedNode.value = null;
-        window.location.reload();
+        router.reload({ only: ['rootNodes'] });
     } catch (err) {
         const msg = err.response?.data?.errors?.delete?.[0] || 'Delete failed.';
-        toast({ type: 'error', message: msg });
+        toast.error(msg);
     }
 }
 

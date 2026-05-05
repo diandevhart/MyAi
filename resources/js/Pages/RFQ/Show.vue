@@ -12,6 +12,9 @@ defineOptions({ layout: AppLayout });
 
 const props = defineProps({
     rfq: Object,
+    canManageProcurement: { type: Boolean, default: false },
+    isOverdue: { type: Boolean, default: false },
+    incompleteItemCount: { type: Number, default: 0 },
 });
 
 const rfq = computed(() => props.rfq);
@@ -96,6 +99,7 @@ async function uploadFile() {
     if (!file) return;
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('file_type', 'attachment');
     try {
         await axios.post(route('rfq.upload-file', rfq.value.id), formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
@@ -153,24 +157,36 @@ async function uploadPO() {
                     <i class="pi pi-chart-bar text-xs"></i> Compare Quotes
                 </button>
                 <button
-                    v-if="rfq.status === 'quoted'"
+                    v-if="props.canManageProcurement && rfq.status === 'quoted'"
                     @click="awardSupplier"
                     class="flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-400 transition-colors"
                 >
                     <i class="pi pi-check text-xs"></i> Award to this Supplier
-                </button>
-            </div>
-        </div>
-
-        <!-- Info Bar -->
-        <div class="mb-6 flex gap-6 text-sm">
-            <div>
+                <div v-if="props.canManageProcurement && rfq.status === 'quoted'" class="flex flex-col items-end gap-1">
+                    <button
+                        @click="awardSupplier"
+                        :disabled="props.incompleteItemCount > 0"
+                        :title="props.incompleteItemCount > 0 ? `${props.incompleteItemCount} item(s) missing unit price` : 'Award RFQ to this supplier'"
+                        :class="[
+                            'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-white transition-colors',
+                            props.incompleteItemCount > 0
+                                ? 'bg-slate-600 cursor-not-allowed opacity-60'
+                                : 'bg-emerald-500 hover:bg-emerald-400'
+                        ]"
+                    >
+                        <i class="pi pi-check text-xs"></i> Award to this Supplier
+                    </button>
+                    <span v-if="props.incompleteItemCount > 0" class="text-xs text-amber-400">
+                        <i class="pi pi-exclamation-circle mr-1"></i>{{ props.incompleteItemCount }} item(s) unquoted
+                    </span>
+                </div>
                 <span class="text-slate-500">Sent:</span>
                 <span class="ml-1 text-slate-300">{{ rfq.sent_at ? new Date(rfq.sent_at).toLocaleDateString() : '—' }}</span>
             </div>
             <div>
                 <span class="text-slate-500">Due:</span>
-                <span class="ml-1 text-slate-300">{{ rfq.due_date ? new Date(rfq.due_date).toLocaleDateString() : '—' }}</span>
+                <span class="ml-1" :class="props.isOverdue ? 'text-red-400' : 'text-slate-300'">{{ rfq.due_date ? new Date(rfq.due_date).toLocaleDateString() : '—' }}</span>
+                <span v-if="props.isOverdue" class="ml-2 rounded-full bg-red-500/20 px-2 py-0.5 text-[10px] font-semibold text-red-400">Overdue</span>
             </div>
             <div v-if="rfq.internal_rfq_request">
                 <span class="text-slate-500">Urgency:</span>
@@ -179,6 +195,13 @@ async function uploadPO() {
             <div>
                 <span class="text-slate-500">Grand Total:</span>
                 <span class="ml-1 text-slate-100 font-semibold">R {{ grandTotal.toLocaleString('en-ZA', { minimumFractionDigits: 2 }) }}</span>
+            </div>
+        </div>
+
+        <div v-if="props.isOverdue" class="mb-6 rounded-xl border border-red-500/30 bg-red-500/10 p-4">
+            <div class="flex items-center gap-2 text-sm text-red-300">
+                <i class="pi pi-exclamation-triangle"></i>
+                This RFQ is overdue. Review supplier response and update status.
             </div>
         </div>
 
